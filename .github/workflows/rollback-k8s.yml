@@ -1,0 +1,80 @@
+name: Rollback k8s deployment
+
+on:
+  workflow_call:
+    inputs:
+      cluster:
+        description: "Target cluster: dev-ru | dev-eu | prod-ru | prod-eu"
+        required: true
+        type: string
+      deployment_name:
+        description: "k8s Deployment name"
+        required: true
+        type: string
+      timeout_seconds:
+        description: "kubectl rollout status timeout"
+        required: false
+        type: number
+        default: 120
+      to_revision:
+        description: "Optional explicit revision number; empty means previous"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  rollback:
+    runs-on: muxly-${{ inputs.cluster }}
+    steps:
+      - name: Resolve namespace
+        id: ns
+        run: |
+          case "${{ inputs.cluster }}" in
+            dev-*)  echo "ns=muxly-dev" >> "$GITHUB_OUTPUT" ;;
+            prod-*) echo "ns=muxly"     >> "$GITHUB_OUTPUT" ;;
+            *)      echo "::error::Unknown cluster ${{ inputs.cluster }}"; exit 1 ;;
+          esac
+
+      - name: Log current state and rollout history
+        run: |
+          echo "=== Current image (before rollback) ==="
+          kubectl get deployment/${{ inputs.deployment_name }} \
+            -n ${{ steps.ns.outputs.ns }} \
+            -o jsonpath='{.spec.template.spec.containers[0].image}'
+          echo
+          echo "=== Rollout history ==="
+          kubectl rollout history deployment/${{ inputs.deployment_name }} \
+            -n ${{ steps.ns.outputs.ns }}
+
+      - name: Pause Keel on deployment
+        run: |
+          kubectl annotate --overwrite \
+            deployment/${{ inputs.deployment_name }} \
+            -n ${{ steps.ns.outputs.ns }} \
+            keel.sh/policy=never
+
+      - name: Roll back
+        run: |
+          if [ -n "${{ inputs.to_revision }}" ]; then
+            kubectl rollout undo deployment/${{ inputs.deployment_name }} \
+              -n ${{ steps.ns.outputs.ns }} \
+              --to-revision=${{ inputs.to_revision }}
+          else
+            kubectl rollout undo deployment/${{ inputs.deployment_name }} \
+              -n ${{ steps.ns.outputs.ns }}
+          fi
+          kubectl rollout status deployment/${{ inputs.deployment_name }} \
+            -n ${{ steps.ns.outputs.ns }} \
+            --timeout=${{ inputs.timeout_seconds }}s
+
+      - name: Log restored state
+        run: |
+          echo "=== Restored image (after rollback) ==="
+          kubectl get deployment/${{ inputs.deployment_name }} \
+            -n ${{ steps.ns.outputs.ns }} \
+            -o jsonpath='{.spec.template.spec.containers[0].image}'
+          echo
+          echo "=== Current revision ==="
+          kubectl get deployment/${{ inputs.deployment_name }} \
+            -n ${{ steps.ns.outputs.ns }} \
+            -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}'
