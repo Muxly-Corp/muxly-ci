@@ -1,0 +1,172 @@
+name: Publish Go service
+
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        description: "ghcr.io image suffix, e.g. muxly-backend → ghcr.io/muxly-corp/muxly-backend"
+        required: true
+        type: string
+      warn_stale_bsr_schemas:
+        description: "Run advisory check that pinned BSR schema SDKs match latest published"
+        required: false
+        type: boolean
+        default: true
+      check_di_generation:
+        description: "Run 'make generate' and verify internal/di/easydi_gen.go is committed"
+        required: false
+        type: boolean
+        default: false
+      clear_keel_pause:
+        description: "After publish, remove keel.sh/policy=never annotation in each cluster in 'clusters'"
+        required: false
+        type: boolean
+        default: true
+      deployment_name:
+        description: "k8s Deployment name (defaults to image_name)"
+        required: false
+        type: string
+        default: ""
+      clusters:
+        description: "JSON array of cluster suffixes for clear-keel-pause matrix"
+        required: false
+        type: string
+        default: '["dev-ru","dev-eu"]'
+      go_version_file:
+        description: "File passed to actions/setup-go via go-version-file"
+        required: false
+        type: string
+        default: "go.mod"
+
+env:
+  GOPROXY: https://buf.build/gen/go,https://proxy.golang.org,direct
+  GOPRIVATE: github.com/Muxly-Corp/*
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ inputs.go_version_file }}
+      - name: Configure git for private repos
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test ./...
+
+  check-di-generation:
+    if: inputs.check_di_generation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ inputs.go_version_file }}
+      - name: Configure git for private repos
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+      - name: Generate
+        run: make generate
+      - name: Verify easydi container is up to date
+        run: |
+          if ! git diff --exit-code -- internal/di/easydi_gen.go; then
+            echo "::error::internal/di/easydi_gen.go is stale. Run 'make generate' and commit the result."
+            exit 1
+          fi
+
+  warn-stale-bsr-schemas:
+    if: inputs.warn_stale_bsr_schemas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ inputs.go_version_file }}
+      - name: Compare pinned vs latest BSR schema SDKs
+        run: |
+          set -euo pipefail
+          stale=0
+          for m in \
+            buf.build/gen/go/muxly/schemas/connectrpc/go \
+            buf.build/gen/go/muxly/schemas/protocolbuffers/go; do
+            pinned=$(go list -m -f '{{.Version}}' "$m" 2>/dev/null || echo "")
+            if [ -z "$pinned" ]; then
+              echo "$m: not in go.mod, skipping"
+              continue
+            fi
+            latest=$(GOFLAGS=-mod=mod GOPROXY=https://buf.build/gen/go \
+              go list -m -f '{{.Version}}' "$m@latest")
+            echo "$m: pinned=$pinned latest=$latest"
+            if [ "$pinned" != "$latest" ]; then
+              echo "::warning::$m is stale (pinned=$pinned, latest=$latest)"
+              stale=1
+            fi
+          done
+          if [ "$stale" = 1 ]; then
+            echo "::error::muxly-schemas BSR SDKs are behind. Run 'make update-schemas' and commit go.mod, go.sum, and (if applicable) internal/di/easydi_gen.go."
+            exit 1
+          fi
+
+  publish:
+    needs: [build-test, check-di-generation]
+    if: |
+      always() &&
+      needs.build-test.result == 'success' &&
+      (needs.check-di-generation.result == 'success' || needs.check-di-generation.result == 'skipped') &&
+      github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: ghcr.io/muxly-corp/${{ inputs.image_name }}:latest
+          secrets: |
+            github_token=${{ secrets.GH_PAT }}
+
+  clear-keel-pause:
+    needs: publish
+    if: inputs.clear_keel_pause && github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        cluster: ${{ fromJSON(inputs.clusters) }}
+    runs-on: muxly-${{ matrix.cluster }}
+    steps:
+      - name: Resolve namespace
+        id: ns
+        run: |
+          case "${{ matrix.cluster }}" in
+            dev-*)  echo "ns=muxly-dev" >> "$GITHUB_OUTPUT" ;;
+            prod-*) echo "ns=muxly"     >> "$GITHUB_OUTPUT" ;;
+            *)      echo "::error::Unknown cluster ${{ matrix.cluster }}"; exit 1 ;;
+          esac
+      - name: Resolve deployment name
+        id: dep
+        run: |
+          if [ -n "${{ inputs.deployment_name }}" ]; then
+            echo "name=${{ inputs.deployment_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ inputs.image_name }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Remove keel.sh/policy annotation (if present)
+        run: |
+          kubectl annotate deployment/${{ steps.dep.outputs.name }} \
+            -n ${{ steps.ns.outputs.ns }} \
+            keel.sh/policy- || true
