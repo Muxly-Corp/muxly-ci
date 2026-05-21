@@ -4,7 +4,13 @@ on:
   workflow_call:
 
 jobs:
+  stub:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "stub ran"
+
   matrix-test:
+    needs: stub
     strategy:
       fail-fast: false
       matrix:
