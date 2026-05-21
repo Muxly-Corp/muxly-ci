@@ -98,11 +98,8 @@ jobs:
 
   publish:
     needs: [build-test, check-di-generation]
-    if: ${{ always() && needs.build-test.result == 'success' && (needs.check-di-generation.result == 'success' || needs.check-di-generation.result == 'skipped') && github.event_name == 'push' }}
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx
