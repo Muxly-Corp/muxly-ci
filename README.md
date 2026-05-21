@@ -25,8 +25,9 @@ Build, test, optionally check generated code, optionally warn on stale BSR schem
 | `check_di_generation` | bool | `false` | Run `make generate` and `git diff --exit-code -- internal/di/easydi_gen.go`. Only services using easydi. |
 | `clear_keel_pause` | bool | `true` | Run `clear-keel-pause` job per cluster after successful publish. Disable for services without a long-running Deployment. |
 | `deployment_name` | string | `image_name` | k8s Deployment name. Override when repo / image name ≠ Deployment name. |
-| `clusters` | string | `'["dev-ru","dev-eu"]'` | JSON array of cluster suffixes for `clear-keel-pause` matrix. Prod intentionally excluded by default. |
 | `go_version_file` | string | `go.mod` | Passed to `actions/setup-go`. |
+
+`clear-keel-pause` runs on a hardcoded matrix `cluster: [dev-ru, dev-eu]`. If your service runs in different/additional clusters, set `clear_keel_pause: false` and clear the annotation manually, or open a PR adding the cluster set as an input.
 
 Secrets (via `secrets: inherit`):
 - `GH_PAT` (per-repo on GitHub Free; org-level on Team+) — for fetching private Go modules.

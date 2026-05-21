@@ -27,11 +27,6 @@ on:
         required: false
         type: string
         default: ""
-      clusters:
-        description: "JSON array of cluster suffixes for clear-keel-pause matrix"
-        required: false
-        type: string
-        default: '["dev-ru","dev-eu"]'
       go_version_file:
         description: "File passed to actions/setup-go via go-version-file"
         required: false
@@ -142,7 +137,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cluster: ${{ fromJSON(inputs.clusters) }}
+        cluster: [dev-ru, dev-eu]
     runs-on: muxly-${{ matrix.cluster }}
     steps:
       - name: Resolve namespace
