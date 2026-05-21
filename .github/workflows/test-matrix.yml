@@ -1,0 +1,14 @@
+name: Test matrix in reusable workflow
+
+on:
+  workflow_call:
+
+jobs:
+  matrix-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        cluster: [dev-ru, dev-eu]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "matrix.cluster=${{ matrix.cluster }}"
