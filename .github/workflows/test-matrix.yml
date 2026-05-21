@@ -9,6 +9,6 @@ jobs:
       fail-fast: false
       matrix:
         cluster: [dev-ru, dev-eu]
-    runs-on: ubuntu-latest
+    runs-on: muxly-${{ matrix.cluster }}
     steps:
       - run: echo "matrix.cluster=${{ matrix.cluster }}"
