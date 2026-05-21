@@ -7,6 +7,11 @@ on:
         description: "ghcr.io image suffix, e.g. muxly-backend → ghcr.io/muxly-corp/muxly-backend"
         required: true
         type: string
+      warn_stale_bsr_schemas:
+        description: "Run advisory check that pinned BSR schema SDKs match latest published"
+        required: false
+        type: boolean
+        default: true
       go_version_file:
         description: "File passed to actions/setup-go via go-version-file"
         required: false
@@ -32,3 +37,36 @@ jobs:
         run: go build ./...
       - name: Test
         run: go test ./...
+
+  warn-stale-bsr-schemas:
+    if: ${{ inputs.warn_stale_bsr_schemas }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ inputs.go_version_file }}
+      - name: Compare pinned vs latest BSR schema SDKs
+        run: |
+          set -euo pipefail
+          stale=0
+          for m in \
+            buf.build/gen/go/muxly/schemas/connectrpc/go \
+            buf.build/gen/go/muxly/schemas/protocolbuffers/go; do
+            pinned=$(go list -m -f '{{.Version}}' "$m" 2>/dev/null || echo "")
+            if [ -z "$pinned" ]; then
+              echo "$m: not in go.mod, skipping"
+              continue
+            fi
+            latest=$(GOFLAGS=-mod=mod GOPROXY=https://buf.build/gen/go \
+              go list -m -f '{{.Version}}' "$m@latest")
+            echo "$m: pinned=$pinned latest=$latest"
+            if [ "$pinned" != "$latest" ]; then
+              echo "::warning::$m is stale (pinned=$pinned, latest=$latest)"
+              stale=1
+            fi
+          done
+          if [ "$stale" = 1 ]; then
+            echo "::error::muxly-schemas BSR SDKs are behind. Run 'make update-schemas' and commit go.mod, go.sum, and (if applicable) internal/di/easydi_gen.go."
+            exit 1
+          fi
