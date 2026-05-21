@@ -17,6 +17,21 @@ on:
         required: false
         type: boolean
         default: false
+      clear_keel_pause:
+        description: "After publish, remove keel.sh/policy=never annotation in each cluster in 'clusters'"
+        required: false
+        type: boolean
+        default: true
+      deployment_name:
+        description: "k8s Deployment name (defaults to image_name)"
+        required: false
+        type: string
+        default: ""
+      clusters:
+        description: "JSON array of cluster suffixes for clear-keel-pause matrix"
+        required: false
+        type: string
+        default: '["dev-ru","dev-eu"]'
       go_version_file:
         description: "File passed to actions/setup-go via go-version-file"
         required: false
@@ -98,7 +113,7 @@ jobs:
 
   publish:
     needs: [build-test, check-di-generation]
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ always() && needs.build-test.result == 'success' && (needs.check-di-generation.result == 'success' || needs.check-di-generation.result == 'skipped') && github.event_name == 'push' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -120,3 +135,34 @@ jobs:
           tags: ghcr.io/muxly-corp/${{ inputs.image_name }}:latest
           secrets: |
             github_token=${{ secrets.GH_PAT }}
+
+  clear-keel-pause:
+    needs: publish
+    if: ${{ inputs.clear_keel_pause && github.event_name == 'push' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        cluster: ${{ fromJSON(inputs.clusters) }}
+    runs-on: muxly-${{ matrix.cluster }}
+    steps:
+      - name: Resolve namespace
+        id: ns
+        run: |
+          case "${{ matrix.cluster }}" in
+            dev-*)  echo "ns=muxly-dev" >> "$GITHUB_OUTPUT" ;;
+            prod-*) echo "ns=muxly"     >> "$GITHUB_OUTPUT" ;;
+            *)      echo "::error::Unknown cluster ${{ matrix.cluster }}"; exit 1 ;;
+          esac
+      - name: Resolve deployment name
+        id: dep
+        run: |
+          if [ -n "${{ inputs.deployment_name }}" ]; then
+            echo "name=${{ inputs.deployment_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ inputs.image_name }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Remove keel.sh/policy annotation (if present)
+        run: |
+          kubectl annotate deployment/${{ steps.dep.outputs.name }} \
+            -n ${{ steps.ns.outputs.ns }} \
+            keel.sh/policy- || true

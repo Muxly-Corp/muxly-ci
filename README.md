@@ -2,8 +2,6 @@
 
 Reusable GitHub Actions workflows for Muxly services.
 
-Design rationale: see [docs/superpowers/specs/2026-05-21-shared-ci-workflows-design.md](../docs/superpowers/specs/2026-05-21-shared-ci-workflows-design.md).
-
 ## Versioning
 
 Reference workflows by the `@v1` sliding tag:
@@ -31,8 +29,18 @@ Build, test, optionally check generated code, optionally warn on stale BSR schem
 | `go_version_file` | string | `go.mod` | Passed to `actions/setup-go`. |
 
 Secrets (via `secrets: inherit`):
-- `GH_PAT` (org-level) — for fetching private Go modules.
+- `GH_PAT` (per-repo on GitHub Free; org-level on Team+) — for fetching private Go modules.
 - `GITHUB_TOKEN` (auto) — for ghcr push and kubectl on in-cluster runners.
+
+**Caller must grant permissions:** the `publish` job pushes to ghcr, so each wrapper workflow must declare
+
+```yaml
+permissions:
+  contents: read
+  packages: write
+```
+
+at the workflow root. GitHub fails the called workflow at startup (`startup_failure`, no jobs, no annotations) if the caller does not match the called job's permission grants.
 
 ### `rollback-k8s.yml`
 
@@ -59,6 +67,10 @@ on:
   push:
     branches: [main]
     paths: [cmd/**, internal/**, go.mod, go.sum, Dockerfile]
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   publish:
