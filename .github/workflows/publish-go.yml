@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: true
+      check_di_generation:
+        description: "Run 'make generate' and verify internal/di/easydi_gen.go is committed"
+        required: false
+        type: boolean
+        default: false
       go_version_file:
         description: "File passed to actions/setup-go via go-version-file"
         required: false
@@ -37,6 +42,26 @@ jobs:
         run: go build ./...
       - name: Test
         run: go test ./...
+
+  check-di-generation:
+    if: ${{ inputs.check_di_generation }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ inputs.go_version_file }}
+      - name: Configure git for private repos
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+      - name: Generate
+        run: make generate
+      - name: Verify easydi container is up to date
+        run: |
+          if ! git diff --exit-code -- internal/di/easydi_gen.go; then
+            echo "::error::internal/di/easydi_gen.go is stale. Run 'make generate' and commit the result."
+            exit 1
+          fi
 
   warn-stale-bsr-schemas:
     if: ${{ inputs.warn_stale_bsr_schemas }}
